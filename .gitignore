@@ -1,0 +1,24 @@
+# Custom ROM Flasher Agent Git Ignore
+# Ignore large binary downloads, flashable images, and system platform-tools
+downloads/
+tools/platform-tools/
+*.zip
+*.img
+*.bin
+*.tar
+*.md5
+*.iso
+
+# Logs and runtime caches
+logs/
+*.log
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+.env
+
+# OS metadata
+.DS_Store
+Thumbs.db

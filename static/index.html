@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DroidFlash AI - Custom ROM Installation Agent</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" type="image/png" href="/static/icons/app_icon.png">
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header class="app-header">
+    <div class="brand-section">
+      <img src="/static/icons/app_icon.png" alt="DroidFlash Logo" class="brand-icon">
+      <div>
+        <h1 class="brand-title">DroidFlash Agent</h1>
+        <p class="brand-subtitle">Autonomous Android Custom ROM Flasher &amp; GitHub Syncer</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button id="btn-refresh-devices" class="btn btn-secondary">
+        🔄 Scan Devices
+      </button>
+      <button id="btn-open-github-modal" class="btn btn-success">
+        🐙 Upload to GitHub
+      </button>
+    </div>
+  </header>
+
+  <!-- Platform Tools Warning Banner -->
+  <div id="tools-banner" style="display: none; background: rgba(245, 158, 11, 0.15); border-bottom: 1px solid rgba(245, 158, 11, 0.4); padding: 0.8rem 2rem; color: #fbbf24; display: flex; justify-content: space-between; align-items: center;">
+    <div>⚠️ Android Platform Tools (adb &amp; fastboot) are missing on this system.</div>
+    <button id="btn-install-tools" class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;">Auto-Install Google Tools</button>
+  </div>
+
+  <main class="main-container">
+
+    <!-- Left Column: Controls, Flasher Wizard & Live Terminal -->
+    <div class="content-left">
+
+      <!-- Active Device Status Card -->
+      <section class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <h2 class="card-title">📱 Connected Smartphone</h2>
+          <div id="device-badge" class="status-badge badge-offline">
+            <span class="pulse-dot"></span>
+            <span id="device-status-text">Scanning...</span>
+          </div>
+        </div>
+
+        <div id="device-info-container">
+          <div class="device-details-grid">
+            <div class="detail-item">
+              <div class="detail-label">Model</div>
+              <div id="dev-model" class="detail-val">--</div>
+            </div>
+            <div class="detail-item">
+              <div class="detail-label">Codename</div>
+              <div id="dev-codename" class="detail-val">--</div>
+            </div>
+            <div class="detail-item">
+              <div class="detail-label">Current Mode</div>
+              <div id="dev-mode" class="detail-val">--</div>
+            </div>
+            <div class="detail-item">
+              <div class="detail-label">Battery Level</div>
+              <div id="dev-battery" class="detail-val">--</div>
+            </div>
+            <div class="detail-item">
+              <div class="detail-label">Bootloader</div>
+              <div id="dev-bootloader" class="detail-val">--</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Custom ROM Management (Tabs: Local File vs Download Online) -->
+      <section class="card">
+        <div class="tabs-header">
+          <button id="tab-local" class="tab-btn active" onclick="switchRomTab('local')">📁 Local Custom ROM</button>
+          <button id="tab-online" class="tab-btn" onclick="switchRomTab('online')">🌐 Download ROM Online</button>
+          <button id="tab-curated" class="tab-btn" onclick="switchRomTab('curated')">📚 ROM Repositories</button>
+        </div>
+
+        <!-- Panel 1: Local ROM Selection -->
+        <div id="panel-local" class="tab-panel">
+          <div class="form-group">
+            <label class="form-label">Available ROM Packages in Workspace / Downloads</label>
+            <select id="select-local-rom" class="form-select">
+              <option value="">-- Select detected local package --</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Or Custom File Path on System</label>
+            <input type="text" id="input-custom-rom-path" class="form-input" placeholder="/home/alpesh/Downloads/lineage-21.0-device.zip">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Custom Recovery (TWRP / OrangeFox .img - Optional)</label>
+            <input type="text" id="input-custom-recovery-path" class="form-input" placeholder="Optional: /path/to/twrp.img or orangefox.img">
+          </div>
+        </div>
+
+        <!-- Panel 2: Online Direct Downloader -->
+        <div id="panel-online" class="tab-panel" style="display: none;">
+          <div class="form-group">
+            <label class="form-label">Direct Download Link (SourceForge, GitHub, LineageOS, GSI, etc.)</label>
+            <input type="text" id="input-download-url" class="form-input" placeholder="https://example.com/lineage-21.0-official.zip">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Save Filename (Optional)</label>
+            <input type="text" id="input-download-filename" class="form-input" placeholder="lineage-21.0.zip">
+          </div>
+          <button id="btn-start-download" class="btn btn-primary">
+            ⬇️ Start Background Download
+          </button>
+
+          <!-- Download Progress Section -->
+          <div id="download-progress-box" style="margin-top: 1rem; display: none;">
+            <div class="progress-header">
+              <span id="dl-filename">Downloading...</span>
+              <span id="dl-stats">0%</span>
+            </div>
+            <div class="progress-track">
+              <div id="dl-progress-bar" class="progress-fill"></div>
+            </div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.3rem;" id="dl-subtext"></div>
+          </div>
+        </div>
+
+        <!-- Panel 3: Curated Sources -->
+        <div id="panel-curated" class="tab-panel" style="display: none;">
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.8rem;">
+            Click to open verified portals to find official ROM zips &amp; recoveries for your specific device model:
+          </p>
+          <div id="sources-container"></div>
+        </div>
+      </section>
+
+      <!-- Flashing Wizard & Execution Options -->
+      <section class="card">
+        <h2 class="card-title">⚡ Automated Flashing Pipeline</h2>
+
+        <div style="display: flex; gap: 1.5rem; margin-bottom: 1.2rem; align-items: center;">
+          <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; cursor: pointer;">
+            <input type="checkbox" id="check-wipe-data" checked>
+            <span>Clean Flash (Wipe UserData / Factory Reset)</span>
+          </label>
+        </div>
+
+        <button id="btn-start-flash" class="btn btn-primary btn-block" style="font-size: 1rem; padding: 0.9rem;">
+          🚀 Start Automated ROM Installation
+        </button>
+
+        <!-- Pipeline Progress Tracker -->
+        <div class="progress-container" style="margin-top: 1.2rem;">
+          <div class="progress-header">
+            <span id="flash-step-label">Ready</span>
+            <span id="flash-pct-label">0%</span>
+          </div>
+          <div class="progress-track">
+            <div id="flash-progress-bar" class="progress-fill"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Real-time Terminal Log Window -->
+      <section class="terminal-window">
+        <div class="terminal-header">
+          <div class="terminal-dots">
+            <span class="dot dot-red"></span>
+            <span class="dot dot-yellow"></span>
+            <span class="dot dot-green"></span>
+          </div>
+          <span>Execution Log Console</span>
+          <button id="btn-clear-logs" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.75rem;">Clear</button>
+        </div>
+        <div id="terminal-body" class="terminal-body">
+[00:00:00] [INFO] DroidFlash Flashing Agent initialized.
+[00:00:00] [INFO] Ready for device connection...
+        </div>
+      </section>
+
+    </div>
+
+    <!-- Right Column: Quick Utilities & GitHub Sync -->
+    <div class="content-right">
+
+      <!-- Device Control Box -->
+      <section class="card">
+        <h3 class="card-title">🛠️ Device Controls</h3>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.8rem;">
+          Send state transitions to connected device:
+        </p>
+        <div class="quick-action-grid">
+          <button class="btn btn-secondary" onclick="rebootDevice('recovery')">Reboot Recovery</button>
+          <button class="btn btn-secondary" onclick="rebootDevice('bootloader')">Reboot Fastboot</button>
+          <button class="btn btn-secondary" onclick="rebootDevice('fastbootd')">Reboot FastbootD</button>
+          <button class="btn btn-secondary" onclick="rebootDevice('system')">Reboot System</button>
+        </div>
+
+        <div style="margin-top: 1rem;">
+          <button class="btn btn-danger btn-block" onclick="unlockBootloader()">
+            🔓 Unlock Bootloader (Fastboot)
+          </button>
+        </div>
+      </section>
+
+      <!-- GitHub Auto-Sync Card -->
+      <section class="card">
+        <h3 class="card-title">🐙 GitHub Automation</h3>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.8rem;">
+          Completely automatically create repo and push all scripts &amp; configuration:
+        </p>
+
+        <div class="form-group">
+          <label class="form-label">Repository Name</label>
+          <input type="text" id="gh-repo-name" class="form-input" value="Android-Custom-ROM-Flasher-Agent">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Commit Message</label>
+          <input type="text" id="gh-commit-msg" class="form-input" value="feat: automated custom rom flasher agent update">
+        </div>
+
+        <div class="form-group">
+          <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--text-muted);">
+            <input type="checkbox" id="gh-private">
+            <span>Make repository private</span>
+          </label>
+        </div>
+
+        <div id="gh-auth-status" style="font-size: 0.8rem; margin-bottom: 0.8rem; color: var(--text-muted);">
+          Checking GitHub CLI status...
+        </div>
+
+        <button id="btn-sync-github" class="btn btn-success btn-block">
+          🚀 Sync &amp; Upload to GitHub
+        </button>
+      </section>
+
+      <!-- System Environment Summary -->
+      <section class="card">
+        <h3 class="card-title">⚙️ Environment Status</h3>
+        <div style="font-size: 0.8rem; line-height: 1.6; color: var(--text-muted);">
+          <div><strong>ADB:</strong> <span id="env-adb">Checking...</span></div>
+          <div><strong>Fastboot:</strong> <span id="env-fastboot">Checking...</span></div>
+          <div><strong>Workspace:</strong> Custom_Roms</div>
+        </div>
+      </section>
+
+    </div>
+
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
