@@ -129,6 +129,44 @@ class FlasherHTTPRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
+        elif path == "/api/flash/stream":
+            # Server-Sent Events (SSE) Stream for real-time zero-latency logs
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+            sub_queue = flasher.subscribe()
+            try:
+                # Send initial state
+                init_msg = json.dumps({
+                    "type": "init",
+                    "flashing": flasher.is_flashing,
+                    "step": flasher.current_step,
+                    "progress": flasher.progress_pct,
+                    "logs": flasher.log_history[-30:] if flasher.log_history else []
+                })
+                self.wfile.write(f"data: {init_msg}\n\n".encode("utf-8"))
+                self.wfile.flush()
+
+                while True:
+                    try:
+                        event = sub_queue.get(timeout=1.0)
+                        data_str = json.dumps(event)
+                        self.wfile.write(f"data: {data_str}\n\n".encode("utf-8"))
+                        self.wfile.flush()
+                    except Exception:
+                        # Send heartbeat ping
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                flasher.unsubscribe(sub_queue)
+            return
+
         # 404 for unknown route
         self.send_response(404)
         self.end_headers()
@@ -183,6 +221,28 @@ class FlasherHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"success": True, "message": f"Download initiated for {task.label}"})
             return
 
+        elif path == "/api/flash/precheck":
+            serial = payload.get("serial", "")
+            rom_path = payload.get("rom_path", "")
+            devices = detector.scan_devices()
+            target_device = next((d for d in devices if d["serial"] == serial), None) if serial else (devices[0] if devices else None)
+            rom_file = Path(rom_path) if rom_path else None
+            rom_meta = rom_mgr.inspect_package(rom_file) if rom_file and rom_file.exists() else {}
+            scorecard = flasher.validate_safety(target_device, rom_meta)
+            self._send_json({"success": True, "scorecard": scorecard, "rom_meta": rom_meta})
+            return
+
+        elif path == "/api/flash/cancel":
+            flasher.cancel_flashing()
+            self._send_json({"success": True, "message": "Cancellation request dispatched."})
+            return
+
+        elif path == "/api/devices/backup":
+            serial = payload.get("serial")
+            success, msg = detector.create_safety_backup(serial)
+            self._send_json({"success": success, "message": msg})
+            return
+
         elif path == "/api/flash/start":
             if flasher.is_flashing:
                 self._send_json({"success": False, "message": "A flashing operation is already running."}, 400)
@@ -193,6 +253,7 @@ class FlasherHTTPRequestHandler(BaseHTTPRequestHandler):
             recovery_path = payload.get("recovery_path") or None
             wipe_data = payload.get("wipe_data", True)
             addons = payload.get("addons", [])
+            force = payload.get("force", False)
 
             if not rom_path:
                 self._send_json({"success": False, "message": "ROM path is required."}, 400)
@@ -203,7 +264,8 @@ class FlasherHTTPRequestHandler(BaseHTTPRequestHandler):
                 rom_path=rom_path,
                 recovery_path=recovery_path,
                 wipe_data=wipe_data,
-                addons=addons
+                addons=addons,
+                force=force
             )
             self._send_json({"success": True, "message": "Flashing process initiated."})
             return

@@ -22,3 +22,9 @@ env/
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Cloudflare Security Auditor Hardening
+*.pyc
+*.key
+*.token
+*.pem

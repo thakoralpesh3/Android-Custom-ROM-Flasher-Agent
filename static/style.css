@@ -89,6 +89,77 @@ body {
   flex: 1;
 }
 
+/* Interactive Stepper */
+.stepper-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(18, 24, 38, 0.6);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 0.9rem 1.4rem;
+  margin-bottom: 1.5rem;
+}
+
+.stepper-step {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  opacity: 0.45;
+  transition: all 0.3s ease;
+}
+
+.stepper-step.active {
+  opacity: 1;
+}
+
+.stepper-step.completed {
+  opacity: 0.9;
+}
+
+.stepper-step.active .step-num {
+  background: var(--accent-cyan);
+  color: #0b0f19;
+  box-shadow: 0 0 12px var(--accent-cyan);
+  font-weight: 700;
+}
+
+.stepper-step.completed .step-num {
+  background: var(--accent-emerald);
+  color: #fff;
+}
+
+.step-num {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #334155;
+  color: #cbd5e1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  font-weight: 600;
+  transition: all 0.3s ease;
+}
+
+.step-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.stepper-line {
+  flex: 1;
+  height: 2px;
+  background: #334155;
+  margin: 0 0.8rem;
+  transition: background 0.3s;
+}
+
+.stepper-line.active {
+  background: var(--accent-cyan);
+}
+
 /* Cards */
 .card {
   background: var(--bg-card);
@@ -113,6 +184,39 @@ body {
   align-items: center;
   gap: 0.5rem;
   color: var(--accent-cyan);
+}
+
+/* Dropzone */
+.dropzone {
+  border: 2px dashed rgba(56, 189, 248, 0.35);
+  border-radius: 10px;
+  padding: 1.6rem 1rem;
+  text-align: center;
+  cursor: pointer;
+  background: rgba(15, 23, 42, 0.4);
+  transition: all 0.2s ease;
+}
+
+.dropzone:hover, .dropzone.dragover {
+  border-color: var(--accent-cyan);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.dropzone-icon {
+  font-size: 2rem;
+  margin-bottom: 0.4rem;
+}
+
+.dropzone-text {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--accent-cyan);
+}
+
+.dropzone-sub {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 0.2rem;
 }
 
 /* Badges & Status */
@@ -414,5 +518,8 @@ body {
 @media (max-width: 900px) {
   .main-container {
     grid-template-columns: 1fr;
+  }
+  .stepper-container {
+    overflow-x: auto;
   }
 }

@@ -7,6 +7,7 @@ and online device build catalog lookups.
 import os
 import time
 import zipfile
+import hashlib
 import threading
 import urllib.request
 from pathlib import Path
@@ -91,6 +92,7 @@ class ROMManager:
         self.downloads_dir = downloads_dir or DOWNLOADS_DIR
         self.downloads_dir.mkdir(parents=True, exist_ok=True)
         self.active_download: Optional[DownloadTask] = None
+        self._inspection_cache: Dict[str, Dict[str, Any]] = {}
 
     def list_local_packages(self, extra_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
         """Scan download directory and optional extra directory for flashable archives and images."""
@@ -110,13 +112,22 @@ class ROMManager:
         return packages
 
     def inspect_package(self, file_path: Path) -> Dict[str, Any]:
-        """Inspect a ROM or recovery archive without full decompression."""
+        """Inspect a ROM or recovery archive without full decompression, using fast caching."""
+        if not file_path.exists():
+            return {"valid": False, "error": "File does not exist", "path": str(file_path)}
+
+        stat = file_path.stat()
+        cache_key = f"{file_path}_{stat.st_mtime}_{stat.st_size}"
+        if cache_key in self._inspection_cache:
+            return self._inspection_cache[cache_key]
+
         info = {
             "name": file_path.name,
             "path": str(file_path),
             "type": "unknown",  # recovery, rom_zip, gsi_img, boot_img
             "compatible_devices": [],
             "android_version": "",
+            "build_id": "",
             "has_payload": False,
             "valid": True
         }
@@ -133,6 +144,7 @@ class ROMManager:
                 info["type"] = "gsi_img"
             else:
                 info["type"] = "partition_img"
+            self._inspection_cache[cache_key] = info
             return info
 
         if suffix == ".zip":
@@ -147,16 +159,34 @@ class ROMManager:
                     elif any("recovery" in n.lower() for n in namelist):
                         info["type"] = "recovery_zip"
 
-                    # Try to inspect updater-script or build properties for device codename
-                    for name in namelist:
-                        if "updater-script" in name:
-                            with z.open(name) as f:
-                                content = f.read(2048).decode("utf-8", errors="ignore")
-                                # Look for assert device checks: getprop("ro.product.device") == "codename"
-                                for word in content.split('"'):
-                                    if len(word) >= 3 and len(word) <= 15 and word.isalnum():
-                                        if word not in ["ro", "product", "device", "boot", "build"]:
-                                            info["compatible_devices"].append(word)
+                    # 1. Inspect META-INF/com/android/metadata (official Android OTA standard)
+                    for meta_name in ["META-INF/com/android/metadata", "metadata"]:
+                        if meta_name in namelist:
+                            with z.open(meta_name) as f:
+                                meta_content = f.read(4096).decode("utf-8", errors="ignore")
+                                for line in meta_content.splitlines():
+                                    if "=" in line:
+                                        k, v = line.split("=", 1)
+                                        k = k.strip().lower()
+                                        v = v.strip()
+                                        if k in ["pre-device", "post-build"]:
+                                            for dev in v.replace(",", " ").split():
+                                                if dev and dev not in info["compatible_devices"]:
+                                                    info["compatible_devices"].append(dev)
+                                        elif k == "post-build":
+                                            info["build_id"] = v
+
+                    # 2. Inspect updater-script if compatible_devices still empty
+                    if not info["compatible_devices"]:
+                        for name in namelist:
+                            if "updater-script" in name:
+                                with z.open(name) as f:
+                                    content = f.read(2048).decode("utf-8", errors="ignore")
+                                    for word in content.split('"'):
+                                        if len(word) >= 3 and len(word) <= 15 and word.isalnum():
+                                            if word not in ["ro", "product", "device", "boot", "build", "assert"]:
+                                                if word not in info["compatible_devices"]:
+                                                    info["compatible_devices"].append(word)
                                 break
             except zipfile.BadZipFile:
                 info["valid"] = False
@@ -164,7 +194,16 @@ class ROMManager:
             except Exception:
                 pass
 
+        self._inspection_cache[cache_key] = info
         return info
+
+    def calculate_checksum(self, file_path: Path, algorithm: str = "sha256") -> str:
+        """Calculate SHA256 or MD5 checksum of a file for integrity verification."""
+        hasher = hashlib.sha256() if algorithm == "sha256" else hashlib.md5()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
 
     def start_download(self, url: str, filename: Optional[str] = None) -> DownloadTask:
         """Initiate background download of a ROM or recovery image."""

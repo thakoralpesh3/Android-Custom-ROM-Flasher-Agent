@@ -19,6 +19,9 @@
       </div>
     </div>
     <div class="header-actions">
+      <button id="btn-backup-device" class="btn btn-secondary" title="Save device properties & partition map before flashing">
+        🛡️ Safety Snapshot
+      </button>
       <button id="btn-refresh-devices" class="btn btn-secondary">
         🔄 Scan Devices
       </button>
@@ -29,7 +32,7 @@
   </header>
 
   <!-- Platform Tools Warning Banner -->
-  <div id="tools-banner" style="display: none; background: rgba(245, 158, 11, 0.15); border-bottom: 1px solid rgba(245, 158, 11, 0.4); padding: 0.8rem 2rem; color: #fbbf24; display: flex; justify-content: space-between; align-items: center;">
+  <div id="tools-banner" style="display: none; background: rgba(245, 158, 11, 0.15); border-bottom: 1px solid rgba(245, 158, 11, 0.4); padding: 0.8rem 2rem; color: #fbbf24; justify-content: space-between; align-items: center;">
     <div>⚠️ Android Platform Tools (adb &amp; fastboot) are missing on this system.</div>
     <button id="btn-install-tools" class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;">Auto-Install Google Tools</button>
   </div>
@@ -38,6 +41,34 @@
 
     <!-- Left Column: Controls, Flasher Wizard & Live Terminal -->
     <div class="content-left">
+
+      <!-- Interactive Stepper Progress Bar -->
+      <div class="stepper-container">
+        <div class="stepper-step active" id="step-1">
+          <div class="step-num">1</div>
+          <div class="step-title">Connect Phone</div>
+        </div>
+        <div class="stepper-line" id="line-1"></div>
+        <div class="stepper-step" id="step-2">
+          <div class="step-num">2</div>
+          <div class="step-title">Anti-Brick Check</div>
+        </div>
+        <div class="stepper-line" id="line-2"></div>
+        <div class="stepper-step" id="step-3">
+          <div class="step-num">3</div>
+          <div class="step-title">Recovery Setup</div>
+        </div>
+        <div class="stepper-line" id="line-3"></div>
+        <div class="stepper-step" id="step-4">
+          <div class="step-num">4</div>
+          <div class="step-title">Sideload Flash</div>
+        </div>
+        <div class="stepper-line" id="line-4"></div>
+        <div class="stepper-step" id="step-5">
+          <div class="step-num">5</div>
+          <div class="step-title">System Reboot</div>
+        </div>
+      </div>
 
       <!-- Active Device Status Card -->
       <section class="card">
@@ -85,7 +116,14 @@
 
         <!-- Panel 1: Local ROM Selection -->
         <div id="panel-local" class="tab-panel">
-          <div class="form-group">
+          <!-- Dropzone -->
+          <div id="rom-dropzone" class="dropzone">
+            <div class="dropzone-icon">📦</div>
+            <div class="dropzone-text">Drag &amp; drop Custom ROM (.zip / .img) here</div>
+            <div class="dropzone-sub">or select from detected packages below</div>
+          </div>
+
+          <div class="form-group" style="margin-top: 1rem;">
             <label class="form-label">Available ROM Packages in Workspace / Downloads</label>
             <select id="select-local-rom" class="form-select">
               <option value="">-- Select detected local package --</option>
@@ -137,20 +175,40 @@
         </div>
       </section>
 
+      <!-- Anti-Brick Safety Scorecard Card -->
+      <section class="card" id="safety-card" style="display: none; border-color: rgba(52, 211, 153, 0.4);">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <h2 class="card-title" style="color: #34d399;">🛡️ Anti-Brick Safety Scorecard</h2>
+          <span id="safety-badge" class="status-badge badge-online">VALIDATED</span>
+        </div>
+        <div id="safety-summary" style="font-size: 0.88rem; line-height: 1.6; margin-top: 0.6rem;"></div>
+        <div id="safety-blockers-box" style="margin-top: 0.6rem; display: none; color: #f87171; font-size: 0.85rem;"></div>
+        <div id="safety-warnings-box" style="margin-top: 0.6rem; display: none; color: #fbbf24; font-size: 0.85rem;"></div>
+      </section>
+
       <!-- Flashing Wizard & Execution Options -->
       <section class="card">
         <h2 class="card-title">⚡ Automated Flashing Pipeline</h2>
 
-        <div style="display: flex; gap: 1.5rem; margin-bottom: 1.2rem; align-items: center;">
+        <div style="display: flex; gap: 1.5rem; margin-bottom: 1.2rem; align-items: center; flex-wrap: wrap;">
           <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; cursor: pointer;">
             <input type="checkbox" id="check-wipe-data" checked>
             <span>Clean Flash (Wipe UserData / Factory Reset)</span>
           </label>
+          <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; cursor: pointer; color: #f87171;" id="force-wrap">
+            <input type="checkbox" id="check-force-flash">
+            <span>Override Anti-Brick Blocker (Force Flash)</span>
+          </label>
         </div>
 
-        <button id="btn-start-flash" class="btn btn-primary btn-block" style="font-size: 1rem; padding: 0.9rem;">
-          🚀 Start Automated ROM Installation
-        </button>
+        <div style="display: flex; gap: 0.8rem;">
+          <button id="btn-start-flash" class="btn btn-primary" style="font-size: 1rem; padding: 0.9rem; flex: 1;">
+            🚀 Start Automated ROM Installation
+          </button>
+          <button id="btn-cancel-flash" class="btn btn-danger" style="display: none; padding: 0.9rem 1.4rem;" onclick="cancelFlashing()">
+            ⏹️ Abort / Cancel
+          </button>
+        </div>
 
         <!-- Pipeline Progress Tracker -->
         <div class="progress-container" style="margin-top: 1.2rem;">
@@ -172,8 +230,22 @@
             <span class="dot dot-yellow"></span>
             <span class="dot dot-green"></span>
           </div>
-          <span>Execution Log Console</span>
-          <button id="btn-clear-logs" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.75rem;">Clear</button>
+          <div style="display: flex; align-items: center; gap: 0.8rem;">
+            <span>Execution Log Console</span>
+            <!-- Live SSE pulse indicator -->
+            <span id="sse-indicator" title="Live streaming" style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #34d399; box-shadow: 0 0 8px #34d399;"></span>
+          </div>
+          <div style="display: flex; gap: 0.6rem; align-items: center;">
+            <select id="select-log-filter" style="background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 4px; color: var(--text-muted); font-size: 0.75rem; padding: 0.2rem 0.4rem;">
+              <option value="ALL">All Logs</option>
+              <option value="ERROR">Errors Only</option>
+              <option value="WARN">Warnings</option>
+              <option value="SUCCESS">Successes</option>
+              <option value="ADB">ADB / Fastboot</option>
+            </select>
+            <button id="btn-download-logs" style="background: none; border: none; color: var(--accent-cyan); cursor: pointer; font-size: 0.75rem;">⬇ Export</button>
+            <button id="btn-clear-logs" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.75rem;">Clear</button>
+          </div>
         </div>
         <div id="terminal-body" class="terminal-body">
 [00:00:00] [INFO] DroidFlash Flashing Agent initialized.
@@ -220,7 +292,7 @@
 
         <div class="form-group">
           <label class="form-label">Commit Message</label>
-          <input type="text" id="gh-commit-msg" class="form-input" value="feat: automated custom rom flasher agent update">
+          <input type="text" id="gh-commit-msg" class="form-input" value="feat: anti-brick protection, SSE stream & safety enhancements">
         </div>
 
         <div class="form-group">
@@ -245,7 +317,8 @@
         <div style="font-size: 0.8rem; line-height: 1.6; color: var(--text-muted);">
           <div><strong>ADB:</strong> <span id="env-adb">Checking...</span></div>
           <div><strong>Fastboot:</strong> <span id="env-fastboot">Checking...</span></div>
-          <div><strong>Workspace:</strong> Custom_Roms</div>
+          <div><strong>Safety Engine:</strong> <span style="color: #34d399;">Active (Anti-Brick Guard)</span></div>
+          <div><strong>Live Stream:</strong> <span style="color: #38bdf8;">SSE Real-Time</span></div>
         </div>
       </section>
 

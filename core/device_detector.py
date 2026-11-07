@@ -221,3 +221,42 @@ class DeviceDetector:
             return False, f"Fastboot reboot command failed: {err}"
 
         return False, "Unknown device interface."
+
+    def create_safety_backup(self, serial: Optional[str] = None) -> Tuple[bool, str]:
+        """
+        Create a safety snapshot of device properties and partition tables
+        before custom ROM installation. Saved into workspace backups/ folder.
+        """
+        import time
+        from pathlib import Path
+        backup_dir = Path(__file__).resolve().parent.parent / "backups" / f"backup_{int(time.time())}"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+
+        devices = self.scan_devices()
+        dev = next((d for d in devices if d["serial"] == serial), None) if serial else (devices[0] if devices else None)
+        if not dev:
+            return False, "No device connected to backup."
+
+        dev_serial = dev["serial"]
+
+        if dev.get("interface") == "adb":
+            # Dump getprop
+            _, props, _ = self.adb.run_adb(["shell", "getprop"], serial=dev_serial)
+            with open(backup_dir / "device_properties.txt", "w", encoding="utf-8") as f:
+                f.write(props)
+
+            # Dump partition layout
+            _, parts, _ = self.adb.run_adb(["shell", "cat", "/proc/partitions"], serial=dev_serial)
+            with open(backup_dir / "partitions_table.txt", "w", encoding="utf-8") as f:
+                f.write(parts)
+
+            return True, f"Safety backup saved to: {backup_dir.name}/"
+
+        elif dev.get("interface") == "fastboot":
+            _, out, err = self.adb.run_fastboot(["getvar", "all"], serial=dev_serial)
+            with open(backup_dir / "fastboot_variables.txt", "w", encoding="utf-8") as f:
+                f.write(f"{out}\n{err}")
+
+            return True, f"Fastboot parameters snapshot saved to: {backup_dir.name}/"
+
+        return False, "Unable to backup from current device state."

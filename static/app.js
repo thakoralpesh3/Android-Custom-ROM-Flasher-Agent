@@ -1,8 +1,12 @@
 // DroidFlash Agent Web Dashboard Client Controller
+// Enhanced with Anti-Brick Safety Scorecard, SSE Real-Time Logs, Stepper & Dropzone
 
 let currentDevices = [];
 let selectedDeviceSerial = null;
 let pollTimer = null;
+let eventSource = null;
+let currentScorecard = null;
+let rawLogEntries = [];
 
 // Tab switcher
 function switchRomTab(tabName) {
@@ -13,10 +17,116 @@ function switchRomTab(tabName) {
   const activePanel = document.getElementById(`panel-${tabName}`);
 
   if (activeBtn) activeBtn.classList.add('active');
-  if (activePanel) activePanel.style.display = 'block';
+  if (activePanel) activePanel.style.display = 'block');
 }
 
-// Initial status polling
+// Stepper Progress Updates
+function updateStepper(stepIndex) {
+  for (let i = 1; i <= 5; i++) {
+    const stepEl = document.getElementById(`step-${i}`);
+    const lineEl = document.getElementById(`line-${i}`);
+    if (!stepEl) continue;
+
+    if (i < stepIndex) {
+      stepEl.className = 'stepper-step completed';
+      if (lineEl) lineEl.className = 'stepper-line active';
+    } else if (i === stepIndex) {
+      stepEl.className = 'stepper-step active';
+      if (lineEl) lineEl.className = 'stepper-line';
+    } else {
+      stepEl.className = 'stepper-step';
+      if (lineEl) lineEl.className = 'stepper-line';
+    }
+  }
+}
+
+// Map pipeline step name to stepper index
+function syncStepperWithStepName(stepName) {
+  const s = (stepName || '').toLowerCase();
+  if (!s || s === 'idle' || s === 'ready') {
+    updateStepper(currentDevices.length > 0 ? 2 : 1);
+  } else if (s.includes('pre-flight') || s.includes('safety')) {
+    updateStepper(2);
+  } else if (s.includes('recovery') || s.includes('bootloader') || s.includes('wipe')) {
+    updateStepper(3);
+  } else if (s.includes('flashing') || s.includes('sideload') || s.includes('addon')) {
+    updateStepper(4);
+  } else if (s.includes('reboot') || s.includes('completed')) {
+    updateStepper(5);
+  }
+}
+
+// SSE Real-Time Log Streaming
+function initSSEStream() {
+  if (eventSource) {
+    eventSource.close();
+  }
+
+  try {
+    eventSource = new EventSource('/api/flash/stream');
+
+    eventSource.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'init') {
+          if (data.logs) {
+            rawLogEntries = data.logs;
+            renderFilteredLogs();
+          }
+          updateFlashStatusUI(data.flashing, data.step, data.progress);
+        } else if (data.type === 'log') {
+          rawLogEntries.push(data.entry);
+          appendLogLine(data.entry);
+          updateFlashStatusUI(true, data.step, data.progress);
+        }
+      } catch (err) {
+        // Heartbeat or raw text
+      }
+    };
+
+    eventSource.onerror = () => {
+      const ind = document.getElementById('sse-indicator');
+      if (ind) ind.style.background = '#f59e0b';
+    };
+
+    eventSource.onopen = () => {
+      const ind = document.getElementById('sse-indicator');
+      if (ind) ind.style.background = '#34d399';
+    };
+  } catch (err) {
+    console.warn('SSE failed, fallback to polling', err);
+  }
+}
+
+function updateFlashStatusUI(flashing, step, progress) {
+  const lblStep = document.getElementById('flash-step-label');
+  const lblPct = document.getElementById('flash-pct-label');
+  const pBar = document.getElementById('flash-progress-bar');
+  const btnStart = document.getElementById('btn-start-flash');
+  const btnCancel = document.getElementById('btn-cancel-flash');
+
+  if (lblStep) lblStep.innerText = step || 'Ready';
+  if (lblPct) lblPct.innerText = `${progress || 0}%`;
+  if (pBar) pBar.style.width = `${progress || 0}%`;
+
+  if (flashing) {
+    if (btnStart) {
+      btnStart.disabled = true;
+      btnStart.innerText = `⏳ Installing (${step})...`;
+    }
+    if (btnCancel) btnCancel.style.display = 'inline-flex';
+  } else {
+    if (btnStart) {
+      btnStart.disabled = false;
+      btnStart.innerText = '🚀 Start Automated ROM Installation';
+    }
+    if (btnCancel) btnCancel.style.display = 'none';
+  }
+
+  syncStepperWithStepName(step);
+}
+
+// Initial and recurring status polling
 async function fetchStatus() {
   try {
     const res = await fetch('/api/status');
@@ -25,11 +135,11 @@ async function fetchStatus() {
     // 1. Check tools
     const toolsBanner = document.getElementById('tools-banner');
     if (!data.tools.ready) {
-      toolsBanner.style.display = 'flex';
+      if (toolsBanner) toolsBanner.style.display = 'flex';
       document.getElementById('env-adb').innerText = 'Missing (Auto-installable)';
       document.getElementById('env-fastboot').innerText = 'Missing';
     } else {
-      toolsBanner.style.display = 'none';
+      if (toolsBanner) toolsBanner.style.display = 'none';
       document.getElementById('env-adb').innerText = data.tools.adb_version || 'Ready';
       document.getElementById('env-fastboot').innerText = data.tools.fastboot_version || 'Ready';
     }
@@ -51,10 +161,9 @@ async function fetchStatus() {
     // 4. Download tracking
     renderDownloadStatus(data.download);
 
-    // 5. Flashing logs & progress
-    if (data.flashing.active) {
-      fetchFlashLogs();
-    }
+    // 5. Update flash status UI
+    updateFlashStatusUI(data.flashing.active, data.flashing.step, data.flashing.progress);
+
   } catch (err) {
     console.error('Failed to poll status:', err);
   }
@@ -74,13 +183,15 @@ function renderDeviceStatus(devices) {
     document.getElementById('dev-battery').innerText = '--';
     document.getElementById('dev-bootloader').innerText = '--';
     selectedDeviceSerial = null;
+    updateStepper(1);
+    const card = document.getElementById('safety-card');
+    if (card) card.style.display = 'none';
     return;
   }
 
   const dev = devices[0];
   selectedDeviceSerial = dev.serial;
 
-  // Set mode badge color
   if (dev.mode === 'device') {
     badge.className = 'status-badge badge-online';
     statusText.innerText = 'Online (ADB)';
@@ -102,6 +213,81 @@ function renderDeviceStatus(devices) {
 
   const blText = dev.unlocked === true ? 'Unlocked ✅' : (dev.unlocked === false ? 'Locked 🔒' : 'Unknown');
   document.getElementById('dev-bootloader').innerText = blText;
+
+  runSafetyPrecheck();
+}
+
+// Run Anti-Brick Safety Check against selected ROM and device
+async function runSafetyPrecheck() {
+  const selectedLocal = document.getElementById('select-local-rom').value;
+  const customPath = document.getElementById('input-custom-rom-path').value.trim();
+  const romPath = selectedLocal || customPath;
+
+  if (!romPath || !selectedDeviceSerial) {
+    const card = document.getElementById('safety-card');
+    if (card) card.style.display = 'none';
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/flash/precheck', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serial: selectedDeviceSerial, rom_path: romPath })
+    });
+    const data = await res.json();
+    if (!data.success) return;
+
+    currentScorecard = data.scorecard;
+    const card = document.getElementById('safety-card');
+    const badge = document.getElementById('safety-badge');
+    const summary = document.getElementById('safety-summary');
+    const blkBox = document.getElementById('safety-blockers-box');
+    const warnBox = document.getElementById('safety-warnings-box');
+
+    card.style.display = 'block';
+
+    const devCodename = data.scorecard.details.device_codename || 'unknown';
+    const romCompat = data.scorecard.details.rom_compatible_devices || [];
+    const bat = data.scorecard.details.battery;
+
+    if (data.scorecard.safe) {
+      card.style.borderColor = 'rgba(52, 211, 153, 0.4)';
+      badge.className = 'status-badge badge-online';
+      badge.innerText = 'SAFE TO FLASH';
+    } else {
+      card.style.borderColor = 'rgba(244, 63, 94, 0.5)';
+      badge.className = 'status-badge badge-offline';
+      badge.innerText = 'BLOCKED (ANTI-BRICK)';
+    }
+
+    summary.innerHTML = `
+      <div><strong>Target Codename:</strong> ${devCodename} ${data.scorecard.details.codename_match ? '✅ MATCH' : ''}</div>
+      <div><strong>ROM Compatible List:</strong> ${romCompat.length ? romCompat.join(', ') : 'Generic / Universal'}</div>
+      <div><strong>Battery Level:</strong> ${bat !== null ? bat + '%' : 'N/A'} ${bat && bat >= 40 ? '✅ SAFE' : (bat ? '⚠️ LOW' : '')}</div>
+    `;
+
+    if (data.scorecard.blockers.length > 0) {
+      blkBox.style.display = 'block';
+      blkBox.innerHTML = '<strong>❌ Critical Blockers:</strong><ul style="margin-left: 1.2rem; margin-top: 0.2rem;">' +
+        data.scorecard.blockers.map(b => `<li>${escapeHtml(b)}</li>`).join('') + '</ul>';
+    } else {
+      blkBox.style.display = 'none';
+    }
+
+    if (data.scorecard.warnings.length > 0) {
+      warnBox.style.display = 'block';
+      warnBox.innerHTML = '<strong>⚠️ Safety Warnings:</strong><ul style="margin-left: 1.2rem; margin-top: 0.2rem;">' +
+        data.scorecard.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('') + '</ul>';
+    } else {
+      warnBox.style.display = 'none';
+    }
+
+    updateStepper(2);
+
+  } catch (err) {
+    console.error('Safety check failed:', err);
+  }
 }
 
 // Render local ROM packages
@@ -258,6 +444,45 @@ async function unlockBootloader() {
   }
 }
 
+// Cancel Flashing
+async function cancelFlashing() {
+  if (!confirm('Are you sure you want to request cancellation of the flashing process?')) return;
+  try {
+    const res = await fetch('/api/flash/cancel', { method: 'POST' });
+    const data = await res.json();
+    alert(data.message);
+  } catch (err) {
+    alert('Cancel request failed: ' + err);
+  }
+}
+
+// Take Safety Snapshot
+document.getElementById('btn-backup-device').addEventListener('click', async () => {
+  if (!selectedDeviceSerial) {
+    alert('Please connect a phone via USB first.');
+    return;
+  }
+
+  const btn = document.getElementById('btn-backup-device');
+  btn.disabled = true;
+  btn.innerText = 'Creating Backup...';
+
+  try {
+    const res = await fetch('/api/devices/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serial: selectedDeviceSerial })
+    });
+    const data = await res.json();
+    alert(data.message);
+  } catch (err) {
+    alert('Backup failed: ' + err);
+  } finally {
+    btn.disabled = false;
+    btn.innerText = '🛡️ Safety Snapshot';
+  }
+});
+
 // Start Automated Flash Pipeline
 document.getElementById('btn-start-flash').addEventListener('click', async () => {
   if (!selectedDeviceSerial) {
@@ -276,8 +501,17 @@ document.getElementById('btn-start-flash').addEventListener('click', async () =>
 
   const recoveryPath = document.getElementById('input-custom-recovery-path').value.trim();
   const wipeData = document.getElementById('check-wipe-data').checked;
+  const forceFlash = document.getElementById('check-force-flash').checked;
 
-  if (!confirm(`Are you ready to install custom ROM:\n${romPath}\n\nMake sure your battery is charged and data is backed up!`)) {
+  if (currentScorecard && !currentScorecard.safe && !forceFlash) {
+    alert('FLASHER BLOCKED: Critical Anti-Brick blockers are active! To proceed anyway at your own risk, check "Override Anti-Brick Blocker".');
+    return;
+  }
+
+  if (!confirm(`Are you ready to install custom ROM:
+${romPath}
+
+Make sure your phone is charged and data is backed up!`)) {
     return;
   }
 
@@ -289,62 +523,116 @@ document.getElementById('btn-start-flash').addEventListener('click', async () =>
         serial: selectedDeviceSerial,
         rom_path: romPath,
         recovery_path: recoveryPath,
-        wipe_data: wipeData
+        wipe_data: wipeData,
+        force: forceFlash
       })
     });
     const data = await res.json();
     if (!data.success) {
       alert('Error: ' + data.message);
-    } else {
-      // Start polling logs rapidly
-      pollFlashLogsFast();
     }
   } catch (err) {
     alert('Failed to start flashing: ' + err);
   }
 });
 
-// Fetch and stream logs
-async function fetchFlashLogs() {
-  try {
-    const res = await fetch('/api/flash/logs');
-    const data = await res.json();
+// Log Rendering and Filtering
+function renderFilteredLogs() {
+  const filter = document.getElementById('select-log-filter').value;
+  const term = document.getElementById('terminal-body');
 
-    document.getElementById('flash-step-label').innerText = data.step || 'Idle';
-    document.getElementById('flash-pct-label').innerText = `${data.progress || 0}%`;
-    document.getElementById('flash-progress-bar').style.width = `${data.progress || 0}%`;
+  const filtered = rawLogEntries.filter(line => {
+    if (filter === 'ALL') return true;
+    if (filter === 'ERROR') return line.includes('[ERROR]') || line.includes('BLOCKED');
+    if (filter === 'WARN') return line.includes('[WARN]');
+    if (filter === 'SUCCESS') return line.includes('[SUCCESS]');
+    if (filter === 'ADB') return line.includes('[ADB]') || line.includes('fastboot');
+    return true;
+  });
 
+  term.innerHTML = filtered.map(line => {
+    let cls = 'log-INFO';
+    if (line.includes('[SUCCESS]')) cls = 'log-SUCCESS';
+    else if (line.includes('[WARN]')) cls = 'log-WARN';
+    else if (line.includes('[ERROR]')) cls = 'log-ERROR';
+    else if (line.includes('[SETUP]')) cls = 'log-SETUP';
+    return `<div class="log-line ${cls}">${escapeHtml(line)}</div>`;
+  }).join('');
+
+  term.scrollTop = term.scrollHeight;
+}
+
+function appendLogLine(line) {
+  const filter = document.getElementById('select-log-filter').value;
+  let shouldShow = true;
+  if (filter === 'ERROR' && !(line.includes('[ERROR]') || line.includes('BLOCKED'))) shouldShow = false;
+  if (filter === 'WARN' && !line.includes('[WARN]')) shouldShow = false;
+  if (filter === 'SUCCESS' && !line.includes('[SUCCESS]')) shouldShow = false;
+  if (filter === 'ADB' && !(line.includes('[ADB]') || line.includes('fastboot'))) shouldShow = false;
+
+  if (shouldShow) {
     const term = document.getElementById('terminal-body');
-    if (data.logs && data.logs.length > 0) {
-      term.innerHTML = data.logs.map(line => {
-        let cls = 'log-INFO';
-        if (line.includes('[SUCCESS]')) cls = 'log-SUCCESS';
-        else if (line.includes('[WARN]')) cls = 'log-WARN';
-        else if (line.includes('[ERROR]')) cls = 'log-ERROR';
-        else if (line.includes('[SETUP]')) cls = 'log-SETUP';
-        return `<div class="log-line ${cls}">${escapeHtml(line)}</div>`;
-      }).join('');
-      term.scrollTop = term.scrollHeight;
-    }
-  } catch (err) {
-    console.error('Failed to fetch flash logs:', err);
+    let cls = 'log-INFO';
+    if (line.includes('[SUCCESS]')) cls = 'log-SUCCESS';
+    else if (line.includes('[WARN]')) cls = 'log-WARN';
+    else if (line.includes('[ERROR]')) cls = 'log-ERROR';
+    else if (line.includes('[SETUP]')) cls = 'log-SETUP';
+
+    const div = document.createElement('div');
+    div.className = `log-line ${cls}`;
+    div.innerText = line;
+    term.appendChild(div);
+    term.scrollTop = term.scrollHeight;
   }
 }
 
-function pollFlashLogsFast() {
-  const interval = setInterval(async () => {
-    await fetchFlashLogs();
-    const res = await fetch('/api/status');
-    const data = await res.json();
-    if (!data.flashing.active) {
-      clearInterval(interval);
-    }
-  }, 1000);
-}
+document.getElementById('select-log-filter').addEventListener('change', renderFilteredLogs);
+
+// Export Logs to .txt
+document.getElementById('btn-download-logs').addEventListener('click', () => {
+  if (rawLogEntries.length === 0) {
+    alert('Log is empty.');
+    return;
+  }
+  const blob = new Blob([rawLogEntries.join('\n')], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `droidflash_log_${new Date().toISOString().replace(/[:.]/g, '_')}.txt`;
+  a.click();
+});
 
 function escapeHtml(text) {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
+
+// Drag & Drop Setup
+const dropzone = document.getElementById('rom-dropzone');
+if (dropzone) {
+  ['dragenter', 'dragover'].forEach(eventName => {
+    dropzone.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      dropzone.classList.add('dragover');
+    });
+  });
+  ['dragleave', 'drop'].forEach(eventName => {
+    dropzone.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+    });
+  });
+  dropzone.addEventListener('drop', (e) => {
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      const file = files[0];
+      const pathInput = document.getElementById('input-custom-rom-path');
+      pathInput.value = file.path || file.name;
+      runSafetyPrecheck();
+    }
+  });
+}
+
+document.getElementById('select-local-rom').addEventListener('change', runSafetyPrecheck);
+document.getElementById('input-custom-rom-path').addEventListener('input', runSafetyPrecheck);
 
 // GitHub Automated Sync
 document.getElementById('btn-sync-github').addEventListener('click', async () => {
@@ -386,6 +674,7 @@ document.getElementById('btn-refresh-devices').addEventListener('click', () => {
 });
 
 document.getElementById('btn-clear-logs').addEventListener('click', () => {
+  rawLogEntries = [];
   document.getElementById('terminal-body').innerHTML = '<div class="log-line log-INFO">[00:00:00] [INFO] Logs cleared.</div>';
 });
 
@@ -394,5 +683,6 @@ window.addEventListener('DOMContentLoaded', () => {
   fetchStatus();
   loadLocalPackages();
   loadCuratedSources();
+  initSSEStream();
   pollTimer = setInterval(fetchStatus, 3000);
 });

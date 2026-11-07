@@ -5,6 +5,7 @@ custom recovery deployment, data wipe, zip sideloading / fastboot flashing, and 
 """
 
 import time
+import queue
 import subprocess
 import threading
 from pathlib import Path
@@ -27,14 +28,106 @@ class FlashEngine:
         self.progress_pct = 0
         self.log_history: List[str] = []
         self._cancel_requested = False
+        self.subscribers: List[queue.Queue] = []
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
+    def subscribe(self) -> queue.Queue:
+        """Register a new SSE log subscriber."""
+        q = queue.Queue(maxsize=100)
+        self.subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: queue.Queue):
+        """Remove an SSE log subscriber."""
+        if q in self.subscribers:
+            self.subscribers.remove(q)
+
     def log(self, message: str, level: str = "INFO"):
-        """Append log message with timestamp and level."""
+        """Append log message with timestamp and broadcast to active subscribers."""
         timestamp = time.strftime("%H:%M:%S")
         entry = f"[{timestamp}] [{level}] {message}"
         self.log_history.append(entry)
         print(entry)
+
+        event_payload = {
+            "type": "log",
+            "entry": entry,
+            "step": self.current_step,
+            "progress": self.progress_pct,
+            "level": level
+        }
+        for q in list(self.subscribers):
+            try:
+                q.put_nowait(event_payload)
+            except Exception:
+                pass
+
+    def cancel_flashing(self):
+        """Request cancellation of the active flashing pipeline."""
+        self._cancel_requested = True
+        self.log("Cancellation requested by user.", "WARN")
+
+    def validate_safety(self, device: Dict[str, Any], rom_info: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Anti-Brick Safety Verification:
+        Cross-checks battery, device codename against ROM target, and bootloader lock state.
+        """
+        blockers = []
+        warnings = []
+        details = {}
+
+        # 1. Device Presence Check
+        if not device:
+            blockers.append("No device connected. Please connect your phone via USB.")
+            return {"safe": False, "blockers": blockers, "warnings": warnings, "details": details}
+
+        dev_codename = (device.get("codename") or "").lower().strip()
+        details["device_codename"] = dev_codename or "Unknown"
+
+        # 2. Battery Check
+        battery = device.get("battery_level")
+        details["battery"] = battery
+        if battery is not None:
+            if battery < 20:
+                blockers.append(f"Battery critically low ({battery}%). Minimum 25% required to prevent power loss during write.")
+            elif battery < 40:
+                warnings.append(f"Battery is at {battery}%. Recommended charging to at least 50% for safety.")
+
+        # 3. Bootloader Lock Check
+        unlocked = device.get("unlocked")
+        details["unlocked"] = unlocked
+        if unlocked is False:
+            blockers.append("Bootloader is LOCKED. Flashing custom ROMs or recoveries requires an unlocked bootloader.")
+        elif unlocked is None and device.get("mode") == "device":
+            warnings.append("Bootloader state could not be verified in ADB mode. Ensure 'OEM Unlocking' is enabled.")
+
+        # 4. Codename Anti-Brick Compatibility Match
+        rom_compat = [c.lower() for c in rom_info.get("compatible_devices", [])]
+        details["rom_compatible_devices"] = rom_compat
+
+        if dev_codename and dev_codename != "unknown" and rom_compat:
+            match = False
+            for target in rom_compat:
+                if dev_codename == target or target in dev_codename or dev_codename in target:
+                    match = True
+                    break
+            if not match:
+                blockers.append(
+                    f"ANTI-BRICK BLOCKED: ROM package is built for '{', '.join(rom_compat)}', but connected device is '{dev_codename}'! "
+                    f"Flashing will hard-brick this phone."
+                )
+            else:
+                details["codename_match"] = True
+        else:
+            if not rom_compat and rom_info.get("type") == "rom_zip":
+                warnings.append("ROM package metadata does not explicitly specify device codename. Verify compatibility before flashing.")
+
+        return {
+            "safe": len(blockers) == 0,
+            "blockers": blockers,
+            "warnings": warnings,
+            "details": details
+        }
 
     def clear_logs(self):
         """Reset logs for a new flashing run."""
@@ -49,9 +142,16 @@ class FlashEngine:
         recovery_path: Optional[str] = None,
         wipe_data: bool = True,
         addons: Optional[List[str]] = None,
+        force: bool = False,
         on_complete: Optional[Callable[[bool, str], None]] = None
     ):
         """Run the complete flashing pipeline in a background thread."""
+        thread = threading.Thread(
+            target=self._run_pipeline,
+            args=(serial, rom_path, recovery_path, wipe_data, addons or [], force, on_complete),
+            daemon=True
+        )
+        thread.start()
         thread = threading.Thread(
             target=self._run_pipeline,
             args=(serial, rom_path, recovery_path, wipe_data, addons or [], on_complete),
@@ -83,7 +183,8 @@ class FlashEngine:
         recovery_path: Optional[str],
         wipe_data: bool,
         addons: List[str],
-        on_complete: Optional[Callable[[bool, str], None]]
+        force: bool = False,
+        on_complete: Optional[Callable[[bool, str], None]] = None
     ):
         self.is_flashing = True
         self._cancel_requested = False
@@ -102,7 +203,7 @@ class FlashEngine:
 
         try:
             # ---------------------------------------------------------
-            # STEP 1: Pre-flight Verification
+            # STEP 1: Pre-flight Verification & Anti-Brick Safety Gate
             # ---------------------------------------------------------
             self.current_step = "Pre-flight Verification"
             self.progress_pct = 5
@@ -121,10 +222,22 @@ class FlashEngine:
 
             self.log(f"Target Device: {target_device.get('model')} ({serial}) in {target_device.get('mode')} mode", "INFO")
 
-            # Check battery
-            bat = target_device.get("battery_level")
-            if bat is not None and bat < 25:
-                self.log(f"Warning: Battery level is {bat}%. It is strongly recommended to charge to at least 40%.", "WARN")
+            # Check ROM metadata & safety scorecard
+            from .rom_manager import ROMManager
+            _rm = ROMManager()
+            rom_meta = _rm.inspect_package(rom_file)
+            safety = self.validate_safety(target_device, rom_meta)
+
+            for warn in safety["warnings"]:
+                self.log(f"[SAFETY WARNING] {warn}", "WARN")
+
+            if not safety["safe"]:
+                for block in safety["blockers"]:
+                    self.log(f"[ANTI-BRICK BLOCKED] {block}", "ERROR")
+                if not force:
+                    raise RuntimeError("Anti-brick safety gate triggered! Flashing halted to protect device.")
+                else:
+                    self.log("FORCED OVERRIDE ACTIVE: User forced flashing despite safety warnings.", "WARN")
 
             # ---------------------------------------------------------
             # STEP 2: Bootloader / Recovery Preparation
